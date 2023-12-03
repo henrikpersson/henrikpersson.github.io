@@ -1,0 +1,98 @@
+import wasmInit, {NesWasm, KeyState} from "./snowpack/link/pkg/nes_wasm.js";
+const keymap = {
+  ["l"]: 7,
+  ["k"]: 6,
+  [" "]: 5,
+  ["Enter"]: 4,
+  ["w"]: 3,
+  ["s"]: 2,
+  ["a"]: 1,
+  ["d"]: 0
+};
+export class BrowserNes {
+  constructor(ctx2, mem, bincart) {
+    this.nes = NesWasm.new(this, bincart);
+    this.ctx = ctx2;
+    this.mem = mem;
+    this.frame_ready = false;
+    this.keyboard = new Array(8).fill(KeyState.None);
+    document.addEventListener("keydown", (ev) => {
+      let btn = keymap[ev.key];
+      if (btn != null) {
+        this.keyboard[btn] = KeyState.Pressed;
+        ev.preventDefault();
+      }
+    });
+    document.addEventListener("keyup", (ev) => {
+      let btn = keymap[ev.key];
+      if (btn != null) {
+        this.keyboard[btn] = KeyState.Released;
+        setTimeout(() => {
+          this.keyboard[btn] = KeyState.None;
+        }, 20);
+        ev.preventDefault();
+      }
+    });
+  }
+  poll_keyboard(ptr) {
+    let state = new Uint8ClampedArray(this.mem.buffer, ptr, 8);
+    state.set(this.keyboard);
+  }
+  on_frame_ready(frame_ptr, len) {
+    const buf = new Uint8ClampedArray(this.mem.buffer, frame_ptr, len);
+    this.ctx.putImageData(new ImageData(buf, 240, 224), 0, 0);
+    this.frame_ready = true;
+  }
+  delay(millis) {
+    this.delay_ms = millis;
+  }
+  loop() {
+    const inner = () => {
+      this.frame_ready = false;
+      while (!this.frame_ready) {
+        this.nes.tick();
+      }
+      if (!this.killed) {
+        if (this.delay_ms != 0) {
+          setTimeout(() => {
+            this.delay_ms = 0;
+            this.req_frame = requestAnimationFrame(inner);
+          }, this.delay_ms);
+        } else {
+          this.req_frame = requestAnimationFrame(inner);
+        }
+      }
+    };
+    this.req_frame = requestAnimationFrame(inner);
+  }
+  kill() {
+    cancelAnimationFrame(this.req_frame);
+    this.killed = true;
+  }
+}
+const c = document.getElementById("c");
+const ctx = c.getContext("2d");
+const wasm = await wasmInit();
+let instance = new BrowserNes(ctx, wasm.memory, []);
+instance.loop();
+c.focus();
+document.getElementById("file_field").addEventListener("change", (input) => {
+  const file = input.target.files[0];
+  const reader = new FileReader();
+  reader.onload = async () => {
+    if (instance != null) {
+      instance.kill();
+      instance = null;
+    }
+    const bincart = new Uint8Array(reader.result);
+    instance = new BrowserNes(ctx, wasm.memory, bincart);
+    instance.loop();
+    c.focus();
+  };
+  reader.onerror = () => {
+    alert(reader.error);
+  };
+  if (file) {
+    reader.readAsArrayBuffer(file);
+  }
+});
